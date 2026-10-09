@@ -33,8 +33,7 @@ Keep `crop.py` free of I/O so it stays easy to test with synthetic `Face` object
 
 | Option | Meaning |
 |---|---|
-| `-H/--horizontal PATH...` | Files or directories for horizontal monitors |
-| `-V/--vertical PATH...` | Files or directories for vertical monitors |
+| `-i/--images PATH...` | Files or directories (recursive), repeatable; images are sorted by orientation automatically |
 | `-o/--override IMAGE` | If the file exists, use it on **all** monitors (full crop logic still applies); otherwise fall back to random selection |
 | `-s/--save FILE` | Save the combined wallpaper |
 | `-d/--save-debug FILE` | Save the debug image (uncropped sources with rectangles) |
@@ -58,12 +57,15 @@ Keep `crop.py` free of I/O so it stays easy to test with synthetic `Face` object
 - Full decoding (`exif_transpose` + RGB) happens only in `Wallpaper.load()` for chosen images.
 
 ### Selection
-- One random image per monitor from the pool matching its orientation.
+- There is a single image list (`-i`); separate horizontal/vertical options were removed on purpose.
+  Each image is classified by its real size (after EXIF rotation): `horizontal`, `vertical` or
+  `square` (`Candidate.orientation`). This also fixes misfiled images.
+- One random image per monitor among the images matching its orientation, plus square images.
 - Avoid repeating the same image on multiple monitors when possible.
 - **Square images** (aspect within ±5% of 1:1, `SQUARE_TOLERANCE`): face layout decides the
   preferred orientation (union span of foreground faces; one side >1.2× the other). A square image
-  from the other pool is eligible if its faces prefer this monitor's orientation; a square image of
-  this pool is skipped if faces clearly prefer the other one (it is still kept as a fallback).
+  is used if its faces prefer this monitor's orientation or show no preference; if faces clearly
+  prefer the other orientation, it is only used as a fallback.
 
 ### Cropping (`crop.crop_box`)
 - Crop to the monitor aspect ratio using the **maximum possible area**: crop **only one axis**

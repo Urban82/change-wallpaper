@@ -3,7 +3,8 @@
 Sets a random, face-aware wallpaper on every X11/Xorg monitor.
 
 The program reads all monitors (size, position, horizontal/vertical orientation) from Xorg/RandR,
-picks a random image for each monitor from the list matching its orientation, crops it to the
+sorts the given images by orientation (from their actual size), picks a random one matching each
+monitor's orientation, crops it to the
 monitor's aspect ratio keeping the detected faces, and sets the combined image as the root background.
 
 ## Installation
@@ -18,15 +19,14 @@ Everything else runs locally, on the CPU.
 ## Usage
 
 ```sh
-poetry run change-wallpaper -H /path/to/landscape extra.jpg -V /path/to/portrait -o /path/to/override.jpg
+poetry run change-wallpaper -i /path/to/photos extra.jpg -o /path/to/override.jpg
 ```
 
 ## Options
 
 | Option | Description |
 |---|---|
-| `-H`, `--horizontal PATH [PATH ...]` | Files or directories (scanned recursively) with images for horizontal monitors. |
-| `-V`, `--vertical PATH [PATH ...]` | Files or directories (scanned recursively) with images for vertical monitors. |
+| `-i`, `--images PATH [PATH ...]` | Image files or directories (scanned recursively). Can be repeated. Images are sorted automatically: wider than tall → horizontal monitors, taller than wide → vertical monitors, square → either. |
 | `-o`, `--override IMAGE` | If this file exists, use it on every monitor instead of a random pick (cropping still applies). If it doesn't exist, images are picked randomly as usual. |
 | `-s`, `--save FILE` | Also save the combined wallpaper to `FILE`. |
 | `-d`, `--save-debug FILE` | Save a debug image: the uncropped source images in the monitor layout, with the crop area (green), detected faces (red) and ignored background faces (yellow). |
@@ -42,6 +42,7 @@ poetry run change-wallpaper -H /path/to/landscape extra.jpg -V /path/to/portrait
 ## How images are chosen and cropped
 
 - Invalid images are skipped with a warning.
+- Orientation comes from the image size, taking the EXIF rotation into account.
 - The same image is not repeated on multiple monitors when there are enough images.
 - Each image is cropped to the monitor's aspect ratio along a single axis only (left/right or
   top/bottom), keeping the largest possible area.
@@ -61,11 +62,11 @@ transparent terminals and compositors pick it up.
 Check the result without changing the desktop:
 
 ```sh
-poetry run change-wallpaper -n -s /tmp/wallpaper.jpg -d /tmp/debug.jpg -H /path/to/landscape -V /path/to/portrait
+poetry run change-wallpaper -n -s /tmp/wallpaper.jpg -d /tmp/debug.jpg -i /path/to/photos
 ```
 
 Run quietly with a log file:
 
 ```sh
-poetry run change-wallpaper -q -l /path/to/change-wallpaper.log -H /path/to/landscape -V /path/to/portrait
+poetry run change-wallpaper -q -l /path/to/change-wallpaper.log -i /path/to/photos
 ```

@@ -34,6 +34,13 @@ class Candidate:
     def square(self) -> bool:
         return is_square(self.width, self.height)
 
+    @property
+    def orientation(self) -> str:
+        """'horizontal', 'vertical' or 'square' (usable for both)."""
+        if self.square:
+            return "square"
+        return "vertical" if self.height > self.width else "horizontal"
+
 
 def probe(path: Path) -> Candidate | None:
     try:
@@ -90,27 +97,25 @@ class Wallpaper:
             log.debug("%s: %d face(s)", path, len(self._faces[path]))
         return self._faces[path]
 
-    def choose(self, monitor: Monitor, pools: dict[str, list[Candidate]], used: set[Path]) -> Candidate | None:
-        """Pick a random image for the monitor.
+    def choose(self, monitor: Monitor, images: list[Candidate], used: set[Path]) -> Candidate | None:
+        """Pick a random image matching the monitor orientation.
 
-        Square images from the other orientation are also eligible when their
-        face layout prefers this monitor's orientation, and square images of
-        this orientation are skipped when faces clearly prefer the other one.
+        Square images are eligible for both orientations, unless their face
+        layout clearly prefers the other one (then only used as a fallback).
         """
         own = monitor.orientation
-        other = "horizontal" if own == "vertical" else "vertical"
-        options = [(c, True) for c in pools[own]] + [(c, False) for c in pools[other] if c.square]
+        options = [c for c in images if c.orientation in (own, "square")]
         random.shuffle(options)
         # prefer images not yet shown on another monitor
-        options.sort(key=lambda o: o[0].path in used)
+        options.sort(key=lambda c: c.path in used)
         fallback = None
-        for cand, native in options:
+        for cand in options:
             if not cand.square:
                 return cand
             pref = face_orientation(foreground_faces(self.faces(cand.path), self.background_ratio))
-            if pref == own or (pref is None and native):
+            if pref in (own, None):
                 return cand
-            if native and fallback is None:
+            if fallback is None:
                 fallback = cand
         return fallback
 
@@ -137,10 +142,8 @@ def percentage(value: str) -> float:
 
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Set a face-aware random wallpaper on every X11 monitor.")
-    ap.add_argument("-V", "--vertical", nargs="+", default=[], metavar="PATH",
-                    help="directories (recursive) or files for vertical monitors")
-    ap.add_argument("-H", "--horizontal", nargs="+", default=[], metavar="PATH",
-                    help="directories (recursive) or files for horizontal monitors")
+    ap.add_argument("-i", "--images", nargs="+", action="extend", default=[], metavar="PATH",
+                    help="image files or directories (recursive); sorted by orientation automatically")
     ap.add_argument("-o", "--override", metavar="IMAGE",
                     help="if this file exists, use it on all monitors instead of a random pick")
     ap.add_argument("-s", "--save", metavar="FILE", help="also save the combined image to FILE")
@@ -188,14 +191,15 @@ def run(args: argparse.Namespace) -> int:
         if override:
             log.debug("Override %s not usable, selecting randomly", override)
         start = time.perf_counter()
-        pools = {"vertical": collect(args.vertical), "horizontal": collect(args.horizontal)}
-        log.debug("Found %d vertical and %d horizontal image(s) in %.2fs",
-                  len(pools["vertical"]), len(pools["horizontal"]), time.perf_counter() - start)
+        images = collect(args.images)
+        counts = {o: sum(c.orientation == o for c in images) for o in ("horizontal", "vertical", "square")}
+        log.debug("Found %d horizontal, %d vertical and %d square image(s) in %.2fs",
+                  counts["horizontal"], counts["vertical"], counts["square"], time.perf_counter() - start)
         start = time.perf_counter()
         selection = {}
         used: set[Path] = set()
         for m in monitors:
-            cand = wp.choose(m, pools, used)
+            cand = wp.choose(m, images, used)
             if cand is None:
                 log.warning("No image available for %s monitor %s", m.orientation, m.name)
                 continue
