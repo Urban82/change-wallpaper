@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Danilo Treffiletti
+
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path

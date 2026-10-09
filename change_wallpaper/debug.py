@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Danilo Treffiletti
+
 from PIL import Image, ImageDraw
 
 from change_wallpaper.crop import Subjects

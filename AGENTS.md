@@ -7,6 +7,8 @@ face-aware wallpaper on every monitor of an X11/Xorg desktop.
 
 - Dependencies are managed with **Poetry** (`pyproject.toml`). Never use bare `pip install`;
   add dependencies with `poetry add`.
+- `pyproject.toml` uses the standard `[project]` layout (Poetry 2, `poetry-core>=2`); only
+  Poetry-specific settings (`packages`) stay in `[tool.poetry]`. License: GPL-3.0-or-later.
 - Python `>=3.11` (developed on 3.14). `numpy>=2.3` is required, since older versions have no wheels for 3.14.
 - Runtime deps: `pillow`, `numpy`, `opencv-python-headless` (OpenCV 5 in use), `python-xlib`.
 - Entry point: `poetry run change-wallpaper ...` (also `python -m change_wallpaper`).
@@ -141,6 +143,8 @@ Detectors return `Box` objects. An image has **one subject kind** (`Subjects.kin
 ## Coding conventions
 
 - Match the existing style: type hints, dataclasses, small focused functions, module constants in UPPER_CASE.
+- Every Python file starts with the license header:
+  `# SPDX-License-Identifier: GPL-3.0-or-later` and `# Copyright (C) 2026 Danilo Treffiletti`.
 - Sparse comments, only for non-obvious behavior.
 - Keep performance in mind: the program runs often (e.g. on a timer). Watch for full image decodes and
   unnecessary face detection. Use the DEBUG timing logs to check.
