@@ -8,7 +8,9 @@ from pathlib import Path
 from PIL import Image, ImageOps
 from Xlib import display
 
-from change_wallpaper.crop import crop_box, face_orientation, is_square
+from change_wallpaper.crop import (
+    BACKGROUND_FACE_RATIO, crop_box, face_orientation, foreground_faces, is_square,
+)
 from change_wallpaper.debug import annotate
 from change_wallpaper.faces import Face, FaceDetector
 from change_wallpaper.log import get_logger, setup_logging
@@ -71,7 +73,8 @@ def collect(entries: list[str]) -> list[Candidate]:
 
 
 class Wallpaper:
-    def __init__(self):
+    def __init__(self, background_ratio: float = BACKGROUND_FACE_RATIO):
+        self.background_ratio = background_ratio
         self._detector: FaceDetector | None = None
         self._faces: dict[Path, list[Face]] = {}
 
@@ -104,7 +107,7 @@ class Wallpaper:
         for cand, native in options:
             if not cand.square:
                 return cand
-            pref = face_orientation(self.faces(cand.path))
+            pref = face_orientation(foreground_faces(self.faces(cand.path), self.background_ratio))
             if pref == own or (pref is None and native):
                 return cand
             if native and fallback is None:
@@ -115,10 +118,21 @@ class Wallpaper:
         """Cropped image for the monitor and, if requested, the annotated source image."""
         img = self.load(path)
         faces = self.faces(path, img)
-        box = crop_box(img.width, img.height, monitor.aspect, faces)
+        kept = foreground_faces(faces, self.background_ratio)
+        box = crop_box(img.width, img.height, monitor.aspect, kept)
         log.debug("%s: %s %s -> crop %s", monitor.name, path, img.size, box)
         cropped = img.crop(box).resize((monitor.width, monitor.height), Image.Resampling.LANCZOS)
-        return cropped, annotate(img, monitor, box, faces) if debug else None
+        return cropped, annotate(img, monitor, box, kept, [f for f in faces if f not in kept]) if debug else None
+
+
+def percentage(value: str) -> float:
+    try:
+        number = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid number: {value!r}") from None
+    if not 0 <= number <= 100:
+        raise argparse.ArgumentTypeError(f"must be between 0 and 100, got {value}")
+    return number
 
 
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -130,8 +144,13 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     ap.add_argument("-o", "--override", metavar="IMAGE",
                     help="if this file exists, use it on all monitors instead of a random pick")
     ap.add_argument("-s", "--save", metavar="FILE", help="also save the combined image to FILE")
+    ap.add_argument("-b", "--background-percent", type=percentage, default=BACKGROUND_FACE_RATIO * 100,
+                    metavar="PERCENT",
+                    help="ignore faces whose area is below PERCENT%% of the biggest face, 0-100 "
+                         f"(default {BACKGROUND_FACE_RATIO * 100:g}, 0 disables)")
     ap.add_argument("-d", "--save-debug", metavar="FILE",
-                    help="save the uncropped source images with crop area (green) and faces (red) to FILE")
+                    help="save the uncropped source images with crop area (green), faces (red) "
+                         "and ignored background faces (yellow) to FILE")
     ap.add_argument("-n", "--dry-run", action="store_true", help="do not set the X root background")
     verbosity = ap.add_mutually_exclusive_group()
     verbosity.add_argument("-v", "--verbose", action="store_true", help="log DEBUG messages")
@@ -160,7 +179,7 @@ def run(args: argparse.Namespace) -> int:
     screen = dpy.screen()
     monitors = get_monitors(dpy)
 
-    wp = Wallpaper()
+    wp = Wallpaper(args.background_percent / 100)
     override = Path(args.override).expanduser() if args.override else None
     if override and override.is_file() and probe(override):
         log.info("Using override image %s", override)

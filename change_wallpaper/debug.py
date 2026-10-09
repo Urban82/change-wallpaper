@@ -8,11 +8,12 @@ log = get_logger(__name__)
 
 CROP_COLOR = (0, 255, 0)
 FACE_COLOR = (255, 0, 0)
+BACKGROUND_FACE_COLOR = (255, 255, 0)
 
 
 def annotate(img: Image.Image, monitor: Monitor, box: tuple[int, int, int, int],
-             faces: list[Face]) -> Image.Image:
-    """Whole source image fitted into the monitor area, with crop and face rectangles."""
+             faces: list[Face], background: list[Face] = ()) -> Image.Image:
+    """Whole source image fitted into the monitor area, with crop, face and background face rectangles."""
     scale = min(monitor.width / img.width, monitor.height / img.height)
     size = (max(1, round(img.width * scale)), max(1, round(img.height * scale)))
     shown = img.resize(size, Image.Resampling.LANCZOS)
@@ -23,6 +24,8 @@ def annotate(img: Image.Image, monitor: Monitor, box: tuple[int, int, int, int],
         r = [round(x0 * scale), round(y0 * scale), round(x1 * scale) - 1, round(y1 * scale) - 1]
         draw.rectangle(r, outline=color, width=line)
 
+    for f in background:
+        rect(f.x, f.y, f.x + f.w, f.y + f.h, BACKGROUND_FACE_COLOR)
     for f in faces:
         rect(f.x, f.y, f.x + f.w, f.y + f.h, FACE_COLOR)
     rect(*box, CROP_COLOR)

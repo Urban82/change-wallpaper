@@ -2,16 +2,70 @@
 
 Sets a random, face-aware wallpaper on every X11/Xorg monitor.
 
+The program reads all monitors (size, position, horizontal/vertical orientation) from Xorg/RandR,
+picks a random image for each monitor from the list matching its orientation, crops it to the
+monitor's aspect ratio keeping the detected faces, and sets the combined image as the root background.
+
+## Installation
+
 ```sh
 poetry install
-poetry run change-wallpaper -H ~/Pictures/landscape extra.jpg -V ~/Pictures/portrait -o ~/override.jpg
 ```
 
-- `-H/--horizontal PATH...`, `-V/--vertical PATH...`: files or directories (scanned recursively). Invalid images are skipped with a warning.
-- `-o/--override IMAGE`: if the file exists, it is used on every monitor instead of a random pick.
-- `-s/--save FILE`: also save the combined image; `-n/--dry-run`: don't set the background; `-v`: verbose.
+The YuNet face detection model is downloaded once to `~/.cache/change-wallpaper/`.
+Everything else runs locally, on the CPU.
 
-Each image is cropped to the monitor aspect ratio along a single axis only. The crop window keeps as many
-faces (OpenCV YuNet, run locally) as possible, or is centered when there are no faces. Square images can be
-used for either orientation when their face layout prefers it. The YuNet model is downloaded once to
-`~/.cache/change-wallpaper/`. The background is set via `_XROOTPMAP_ID`/`ESETROOT_PMAP_ID`, like `hsetroot`.
+## Usage
+
+```sh
+poetry run change-wallpaper -H /path/to/landscape extra.jpg -V /path/to/portrait -o /path/to/override.jpg
+```
+
+## Options
+
+| Option | Description |
+|---|---|
+| `-H`, `--horizontal PATH [PATH ...]` | Files or directories (scanned recursively) with images for horizontal monitors. |
+| `-V`, `--vertical PATH [PATH ...]` | Files or directories (scanned recursively) with images for vertical monitors. |
+| `-o`, `--override IMAGE` | If this file exists, use it on every monitor instead of a random pick (cropping still applies). If it doesn't exist, images are picked randomly as usual. |
+| `-s`, `--save FILE` | Also save the combined wallpaper to `FILE`. |
+| `-d`, `--save-debug FILE` | Save a debug image: the uncropped source images in the monitor layout, with the crop area (green), detected faces (red) and ignored background faces (yellow). |
+| `-b`, `--background-percent PERCENT` | Ignore faces whose area is below `PERCENT`% of the biggest face, from 0 to 100. Default `25`; `0` disables the filter. |
+| `-n`, `--dry-run` | Do everything except setting the X root background. |
+| `-v`, `--verbose` | Show DEBUG messages (faces, crop boxes, timings). |
+| `-q`, `--silent` | Show only warnings and errors. |
+| `-l`, `--log-file FILE` | Also log to `FILE`, rotated at 10 MB, keeping 5 files. |
+| `-h`, `--help` | Show the help message. |
+
+`-v` and `-q` cannot be used together. Without either, INFO messages are shown.
+
+## How images are chosen and cropped
+
+- Invalid images are skipped with a warning.
+- The same image is not repeated on multiple monitors when there are enough images.
+- Each image is cropped to the monitor's aspect ratio along a single axis only (left/right or
+  top/bottom), keeping the largest possible area.
+- The crop keeps as many whole faces as possible and is centered on them, with bigger (closer)
+  faces weighing more. Without faces, the crop is centered.
+- Small background faces (see `-b`) are ignored.
+- Square images can be used for either orientation when their faces are clearly arranged
+  horizontally or vertically.
+
+## Background
+
+The background is set through `_XROOTPMAP_ID`/`ESETROOT_PMAP_ID`, like `hsetroot` and `feh`, so
+transparent terminals and compositors pick it up.
+
+## Examples
+
+Check the result without changing the desktop:
+
+```sh
+poetry run change-wallpaper -n -s /tmp/wallpaper.jpg -d /tmp/debug.jpg -H /path/to/landscape -V /path/to/portrait
+```
+
+Run quietly with a log file:
+
+```sh
+poetry run change-wallpaper -q -l /path/to/change-wallpaper.log -H /path/to/landscape -V /path/to/portrait
+```
