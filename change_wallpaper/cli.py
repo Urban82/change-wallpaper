@@ -1,6 +1,7 @@
 import argparse
 import logging
 import random
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,6 +17,8 @@ from change_wallpaper.xroot import set_root_background
 Image.MAX_IMAGE_PIXELS = None
 
 log = get_logger(__name__)
+
+EXIF_ORIENTATION = 0x0112
 
 
 @dataclass
@@ -33,9 +36,12 @@ def probe(path: Path) -> Candidate | None:
     try:
         with Image.open(path) as img:
             img.verify()
+        # Header-only read: size plus EXIF orientation, without decoding pixels
         with Image.open(path) as img:
-            img = ImageOps.exif_transpose(img)
-            return Candidate(path, img.width, img.height)
+            width, height = img.size
+            if img.getexif().get(EXIF_ORIENTATION, 1) in (5, 6, 7, 8):
+                width, height = height, width
+            return Candidate(path, width, height)
     except Exception as exc:
         log.warning("Discarding %s: not a valid image (%s: %s)", path, exc.__class__.__name__, exc)
         return None
@@ -157,9 +163,11 @@ def run(args: argparse.Namespace) -> int:
     else:
         if override:
             log.debug("Override %s not usable, selecting randomly", override)
+        start = time.perf_counter()
         pools = {"vertical": collect(args.vertical), "horizontal": collect(args.horizontal)}
-        log.debug("Found %d vertical and %d horizontal image(s)",
-                  len(pools["vertical"]), len(pools["horizontal"]))
+        log.debug("Found %d vertical and %d horizontal image(s) in %.2fs",
+                  len(pools["vertical"]), len(pools["horizontal"]), time.perf_counter() - start)
+        start = time.perf_counter()
         selection = {}
         used: set[Path] = set()
         for m in monitors:
@@ -170,19 +178,24 @@ def run(args: argparse.Namespace) -> int:
             used.add(cand.path)
             selection[m] = cand.path
             log.info("Monitor %s: %s", m.name, cand.path)
+        log.debug("Selection took %.2fs", time.perf_counter() - start)
 
     if not selection:
         log.error("No images to set")
         return 1
 
+    start = time.perf_counter()
     canvas = Image.new("RGB", (screen.width_in_pixels, screen.height_in_pixels))
     for m, path in selection.items():
         canvas.paste(wp.render(path, m), (m.x, m.y))
+    log.debug("Rendering took %.2fs", time.perf_counter() - start)
 
     if args.save:
         canvas.save(args.save)
         log.info("Combined image saved to %s", args.save)
     if not args.dry_run:
+        start = time.perf_counter()
         set_root_background(dpy, canvas)
+        log.debug("Setting background took %.2fs", time.perf_counter() - start)
     dpy.close()
     return 0
