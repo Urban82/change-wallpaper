@@ -16,7 +16,7 @@ from change_wallpaper.detection import Box
 from change_wallpaper.faces import FaceDetector
 from change_wallpaper.log import get_logger, setup_logging
 from change_wallpaper.monitors import Monitor, get_monitors
-from change_wallpaper.people import PersonDetector
+from change_wallpaper.objects import ObjectDetector
 from change_wallpaper.xroot import set_root_background
 
 Image.MAX_IMAGE_PIXELS = None
@@ -24,6 +24,10 @@ Image.MAX_IMAGE_PIXELS = None
 log = get_logger(__name__)
 
 EXIF_ORIENTATION = 0x0112
+
+# option value -> subject kind, in default fallback order
+FALLBACK_NAMES = {"people": "person", "animals": "animal", "vehicles": "vehicle"}
+DEFAULT_FALLBACKS = tuple(FALLBACK_NAMES.values())
 
 
 @dataclass
@@ -82,49 +86,56 @@ def collect(entries: list[str]) -> list[Candidate]:
 
 
 class Wallpaper:
-    def __init__(self, background_ratio: float = BACKGROUND_FACE_RATIO, detect_people: bool = True):
+    def __init__(self, background_ratio: float = BACKGROUND_FACE_RATIO,
+                 fallbacks: tuple[str, ...] = DEFAULT_FALLBACKS):
         self.background_ratio = background_ratio
-        self.detect_people = detect_people
+        self.fallbacks = fallbacks
         self._face_detector: FaceDetector | None = None
-        self._person_detector: PersonDetector | None = None
+        self._object_detector: ObjectDetector | None = None
         self._subjects: dict[Path, Subjects] = {}
 
     def load(self, path: Path) -> Image.Image:
         with Image.open(path) as img:
             return ImageOps.exif_transpose(img).convert("RGB")
 
-    def _split(self, boxes: list[Box], kind: str) -> tuple[list[Box], list[Box]]:
+    def _subjects_of(self, kind: str, boxes: list[Box]) -> Subjects:
         kept = foreground(boxes, self.background_ratio, kind)
-        return kept, [b for b in boxes if b not in kept]
+        return Subjects(kind, kept, [b for b in boxes if b not in kept])
 
     def subjects(self, path: Path, img: Image.Image | None = None) -> Subjects:
-        """Faces, or people as a fallback when no face is found (cached per path)."""
+        """Faces; when none, the first of people/animals/vehicles found (cached per path)."""
         if path in self._subjects:
             return self._subjects[path]
         if img is None:
             img = self.load(path)
         if self._face_detector is None:
             self._face_detector = FaceDetector()
-        result = Subjects()
         start = time.perf_counter()
         faces = self._face_detector.detect(img)
         log.debug("%s: %d face(s) found in %.2fs", path, len(faces), time.perf_counter() - start)
-        result.faces, result.background_faces = self._split(faces, "face")
-        if not faces and self.detect_people:
-            if self._person_detector is None:
-                self._person_detector = PersonDetector()
+        result = Subjects()
+        if faces:
+            result = self._subjects_of("face", faces)
+        elif self.fallbacks:
+            if self._object_detector is None:
+                self._object_detector = ObjectDetector()
             start = time.perf_counter()
-            people = self._person_detector.detect(img)
-            log.debug("%s: no faces, %d person(s) found in %.2fs", path, len(people), time.perf_counter() - start)
-            result.people, result.background_people = self._split(people, "person")
+            found = self._object_detector.detect(img, self.fallbacks)
+            log.debug("%s: no faces, found %s in %.2fs", path,
+                      ", ".join(f"{len(found[k])} {k}(s)" for k in self.fallbacks), time.perf_counter() - start)
+            for kind in self.fallbacks:
+                if found[kind]:
+                    log.debug("Detected %s: %s", kind, found[kind])
+                    result = self._subjects_of(kind, found[kind])
+                    break
         self._subjects[path] = result
         return result
 
     def choose(self, monitor: Monitor, images: list[Candidate], used: set[Path]) -> Candidate | None:
         """Pick a random image matching the monitor orientation.
 
-        Square images are eligible for both orientations, unless their face (or
-        people) layout clearly prefers the other one (then only used as a fallback).
+        Square images are eligible for both orientations, unless the layout of
+        their subjects clearly prefers the other one (then only used as a fallback).
         """
         own = monitor.orientation
         options = [c for c in images if c.orientation in (own, "square")]
@@ -146,10 +157,23 @@ class Wallpaper:
         """Cropped image for the monitor and, if requested, the annotated source image."""
         img = self.load(path)
         found = self.subjects(path, img)
-        box = crop_box(img.width, img.height, monitor.aspect, found.faces, found.people)
-        log.debug("%s: %s %s -> crop %s", monitor.name, path, img.size, box)
+        box = crop_box(img.width, img.height, monitor.aspect, found.main, top_fallback=found.kind == "person")
+        log.debug("%s: %s %s -> crop %s (subject: %s)", monitor.name, path, img.size, box, found.kind or "none")
         cropped = img.crop(box).resize((monitor.width, monitor.height), Image.Resampling.LANCZOS)
         return cropped, annotate(img, monitor, box, found) if debug else None
+
+
+def fallbacks(value: str) -> tuple[str, ...]:
+    if value.strip().lower() == "none":
+        return ()
+    kinds = []
+    for name in (v.strip().lower() for v in value.split(",") if v.strip()):
+        if name not in FALLBACK_NAMES:
+            raise argparse.ArgumentTypeError(
+                f"unknown kind {name!r}, use {', '.join(FALLBACK_NAMES)} or 'none'")
+        if FALLBACK_NAMES[name] not in kinds:
+            kinds.append(FALLBACK_NAMES[name])
+    return tuple(kinds)
 
 
 def percentage(value: str) -> float:
@@ -173,11 +197,13 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
                     metavar="PERCENT",
                     help="ignore faces whose area is below PERCENT%% of the biggest face, 0-100 "
                          f"(default {BACKGROUND_FACE_RATIO * 100:g}, 0 disables)")
-    ap.add_argument("-P", "--no-people", action="store_true",
-                    help="do not look for people (e.g. seen from behind) when no face is found")
+    ap.add_argument("-F", "--fallback", type=fallbacks, default=DEFAULT_FALLBACKS, metavar="KINDS",
+                    help="what to look for, in order, when no face is found: comma separated list of "
+                         f"{', '.join(FALLBACK_NAMES)}, or 'none' (default {','.join(FALLBACK_NAMES)})")
     ap.add_argument("-d", "--save-debug", metavar="FILE",
-                    help="save the uncropped source images with crop area (green), faces (red), "
-                         "background faces (yellow), people (blue) and background people (magenta) to FILE")
+                    help="save the uncropped source images with the crop area (green) and the detected faces (red), "
+                         "people (blue), animals (orange) or vehicles (magenta) to FILE; "
+                         "ignored background ones are dashed")
     ap.add_argument("-n", "--dry-run", action="store_true", help="do not set the X root background")
     verbosity = ap.add_mutually_exclusive_group()
     verbosity.add_argument("-v", "--verbose", action="store_true", help="log DEBUG messages")
@@ -206,7 +232,7 @@ def run(args: argparse.Namespace) -> int:
     screen = dpy.screen()
     monitors = get_monitors(dpy)
 
-    wp = Wallpaper(args.background_percent / 100, not args.no_people)
+    wp = Wallpaper(args.background_percent / 100, args.fallback)
     override = Path(args.override).expanduser() if args.override else None
     if override and override.is_file() and probe(override):
         log.info("Using override image %s", override)

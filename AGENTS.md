@@ -12,7 +12,7 @@ face-aware wallpaper on every monitor of an X11/Xorg desktop.
 - Entry point: `poetry run change-wallpaper ...` (also `python -m change_wallpaper`).
 - Everything must run **locally**. No external/cloud services. The only network access
   allowed is the one-time download of the YuNet and NanoDet-Plus models to `~/.cache/change-wallpaper/`.
-- Face and person detection run on **CPU only**. CUDA was evaluated and rejected: PyPI OpenCV wheels have
+- Face and object detection run on **CPU only**. CUDA was evaluated and rejected: PyPI OpenCV wheels have
   no CUDA, OpenCV 5's new graph engine ignores targets, and detection is not the bottleneck.
 
 ## Module layout (`change_wallpaper/`)
@@ -21,17 +21,17 @@ face-aware wallpaper on every monitor of an X11/Xorg desktop.
 |---|---|
 | `cli.py` | Argument parsing, image collection/validation, selection, rendering, orchestration |
 | `monitors.py` | Monitor discovery via RandR (`xrandr_get_monitors`), orientation |
-| `detection.py` | `Box` (detected object: face or person), model download/cache, shared image helpers |
+| `detection.py` | `Box` (detected object: face, person, animal, vehicle), model download/cache, shared image helpers |
 | `faces.py` | `FaceDetector` (OpenCV `FaceDetectorYN`, YuNet) |
-| `people.py` | `PersonDetector` (NanoDet-Plus via `cv2.dnn`, own post-processing) |
+| `objects.py` | `ObjectDetector` (NanoDet-Plus via `cv2.dnn`, own post-processing): people, animals, vehicles in one pass |
 | `crop.py` | Pure cropping logic: `Subjects`, crop box, background filter, square-image orientation |
 | `debug.py` | Annotated debug image (source image + crop/face rectangles) |
 | `xroot.py` | Setting the X root background pixmap |
 | `log.py` | Logging setup and `get_logger()` |
 
 Keep `crop.py` free of I/O so it stays easy to test with synthetic `Box` objects.
-Detectors return `Box` objects; whether a box is a face or a person is given by where it is
-stored (`Subjects.faces` / `Subjects.people`), not by its type.
+Detectors return `Box` objects. An image has **one subject kind** (`Subjects.kind`: `face`,
+`person`, `animal`, `vehicle` or `None`) with `main` (used) and `background` (ignored) boxes.
 
 ## Command-line interface
 
@@ -41,8 +41,8 @@ stored (`Subjects.faces` / `Subjects.people`), not by its type.
 | `-o/--override IMAGE` | If the file exists, use it on **all** monitors (full crop logic still applies); otherwise fall back to random selection |
 | `-s/--save FILE` | Save the combined wallpaper |
 | `-d/--save-debug FILE` | Save the debug image (uncropped sources with rectangles) |
-| `-b/--background-percent PERCENT` | Background face/person threshold as a percentage, 0–100 (default `25`, `0` disables); converted to a 0–1 ratio internally |
-| `-P/--no-people` | Disable the person-detection fallback |
+| `-b/--background-percent PERCENT` | Background subject threshold as a percentage, 0–100 (default `25`, `0` disables); converted to a 0–1 ratio internally |
+| `-F/--fallback KINDS` | Comma list of `people`, `animals`, `vehicles` (order matters) or `none`; default `people,animals,vehicles` |
 | `-n/--dry-run` | Do not set the X root background |
 | `-v/--verbose` / `-q/--silent` | DEBUG / WARNING log level (mutually exclusive; default INFO) |
 | `-l/--log-file FILE` | Also log to a rotating file |
@@ -68,7 +68,7 @@ stored (`Subjects.faces` / `Subjects.people`), not by its type.
 - One random image per monitor among the images matching its orientation, plus square images.
 - Avoid repeating the same image on multiple monitors when possible.
 - **Square images** (aspect within ±5% of 1:1, `SQUARE_TOLERANCE`): face layout decides the
-  preferred orientation (`layout_orientation`: union span of foreground faces, or people when there are no faces;
+  preferred orientation (`layout_orientation`: union span of the image's foreground subjects;
   one side >1.2× the other). A square image
   is used if its faces prefer this monitor's orientation or show no preference; if faces clearly
   prefer the other orientation, it is only used as a fallback.
@@ -81,24 +81,31 @@ stored (`Subjects.faces` / `Subjects.people`), not by its type.
   2. Tie-break by total face area.
   3. Center on the **area-weighted center** of the contained faces (bigger, closer faces weigh more),
      clamped so every contained face stays inside the window.
-- **People fallback**: only when no face at all is detected (and `-P` is not given), people are
-  detected and used like faces (`crop_box(..., people=...)`). A person box is kept **whole** when it
-  fits the crop window; otherwise its **top 25%** (`PERSON_HEAD_FRACTION`, head and shoulders) is
-  used on the y axis, not the middle of the box. Any span still longer than the window is reduced
-  to its center point.
-- No faces or people: center the crop.
-- **Background faces/people**: faces (or people) with area below `BACKGROUND_FACE_RATIO` (0.25, i.e. `-b 25`) × the biggest face
+- **Fallback chain**: faces → people → animals → vehicles (configurable with `-F`). Only when no
+  face at all is detected, the object detector runs once and the first kind with detections is
+  used like faces.
+  - People (`top_fallback=True`): box kept **whole** when it fits the crop window; otherwise its
+    **top 25%** (`PERSON_HEAD_FRACTION`, head and shoulders) is used on the y axis, not the middle.
+  - Animals, vehicles (and faces): box kept whole when it fits; otherwise its center is used.
+  - Any span still longer than the window is reduced to its center point.
+- Nothing detected: center the crop.
+- **Background subjects**: boxes of the chosen kind with area below `BACKGROUND_FACE_RATIO` (0.25, i.e. `-b 25`) × the biggest face
   area are ignored for cropping and orientation (`foreground`). Typical case: one subject in
   front of a crowd; at 25% only the front subject is kept, while 10% still kept some crowd faces.
 - Keep `README.md` (options table) and this file in sync whenever CLI options change.
 
-### Face and person detection
+### Face and object detection
 - Faces: YuNet (`face_detection_yunet_2023mar.onnx`), score threshold 0.7.
-- People: NanoDet-Plus (`object_detection_nanodet_2022nov.onnx`, COCO class 0 "person"), score
+- Objects: NanoDet-Plus (`object_detection_nanodet_2022nov.onnx`, COCO). Groups (`CLASS_GROUPS`):
+  person = 0, animal = 14–23 (bird, cat, dog, horse, sheep, cow, elephant, bear, zebra, giraffe),
+  vehicle = 1–8 (bicycle, car, motorcycle, airplane, bus, train, truck, boat). Score per group is
+  the max over its classes, NMS per group. Score
   threshold 0.5, NMS 0.6, 416×416 letterboxed input (top-left anchored). Outputs are paired by
   shape (`(1, N, 80)` scores with `(1, N, 32)` box distributions, N = 52², 26², 13² for strides
   8/16/32), not by output order, since the order differs from the opencv_zoo demo.
 - OpenCV 5 has no `HOGDescriptor`, so the classic HOG people detector is not available.
+- YuNet sometimes detects animal faces (e.g. a dog looking at the camera) as faces; then the face
+  path is used and the animal fallback is never reached. This is acceptable.
 - Detect on a copy scaled to max 1280 px on the long side, then scale boxes back and clip to the image.
 - Results are cached per path for the duration of a run.
 - OpenCV native logging is set to ERROR to avoid noise.
@@ -112,8 +119,9 @@ stored (`Subjects.faces` / `Subjects.people`), not by its type.
 
 ### Debug image
 - Same canvas/layout as the wallpaper; each **full** source image is fitted (letterboxed) into its monitor area.
-- Colors: crop area **green**, kept faces **red**, ignored background faces **yellow**,
-  kept people **blue**, ignored background people **magenta**.
+- Colors by kind: crop area **green**, faces **red**, people **blue**, animals **orange**,
+  vehicles **magenta**. Ignored background subjects: same color, **darker** (55%) and **dashed**
+  (dash length adapts to small boxes; darker shade keeps tiny boxes distinguishable).
 
 ## Logging standards
 
@@ -124,7 +132,7 @@ stored (`Subjects.faces` / `Subjects.people`), not by its type.
 - Levels: default INFO, `--verbose` DEBUG, `--silent` WARNING.
 - Use lazy `%` formatting (`log.info("x %s", v)`), not f-strings.
 - Level guidelines:
-  - DEBUG: faces, people (with timing), crop boxes, counts, timings (scan, selection, rendering, background set), pixmap cleanup.
+  - DEBUG: detected subjects and kind (with detection timings), crop boxes, counts, timings (scan, selection, rendering, background set), pixmap cleanup.
   - INFO: monitors, chosen images, override in use, model download, saved files, background set.
   - WARNING: invalid/missing files, monitor without image, no RandR monitors, interruption.
   - ERROR: nothing to set; unexpected exceptions are logged with `log.exception` (exit code 1; Ctrl+C exits 130).

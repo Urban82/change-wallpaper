@@ -7,7 +7,7 @@ log = get_logger(__name__)
 
 # Images whose aspect ratio is within this tolerance of 1:1 are "square"
 SQUARE_TOLERANCE = 0.05
-# Faces with an area below this fraction of the biggest face are background
+# Subjects with an area below this fraction of the biggest one are background
 BACKGROUND_FACE_RATIO = 0.25
 # Top part of a person box used when the whole box does not fit the crop
 PERSON_HEAD_FRACTION = 0.25
@@ -15,16 +15,14 @@ PERSON_HEAD_FRACTION = 0.25
 
 @dataclass
 class Subjects:
-    """Detected subjects of an image, split into foreground (used) and background (ignored)."""
+    """Detected subjects of an image: one kind only, split into foreground (used) and background (ignored).
 
-    faces: list[Box] = field(default_factory=list)
-    background_faces: list[Box] = field(default_factory=list)
-    people: list[Box] = field(default_factory=list)
-    background_people: list[Box] = field(default_factory=list)
+    kind is "face", "person", "animal", "vehicle", or None when nothing was found.
+    """
 
-    @property
-    def main(self) -> list[Box]:
-        return self.faces or self.people
+    kind: str | None = None
+    main: list[Box] = field(default_factory=list)
+    background: list[Box] = field(default_factory=list)
 
 
 def is_square(width: int, height: int) -> bool:
@@ -103,32 +101,30 @@ def _fit_span(a: float, b: float, length: int) -> tuple[float, float]:
     return mid, mid
 
 
-def _person_span(start: float, size: float, length: int, top: bool) -> tuple[float, float]:
-    """Whole person box if it fits; otherwise the top part (head and shoulders) on the y axis."""
+def _top_span(start: float, size: float, length: int) -> tuple[float, float]:
+    """Whole box if it fits; otherwise its top part (a person's head and shoulders)."""
     if size <= length:
         return start, start + size
-    if top:
-        return _fit_span(start, start + size * PERSON_HEAD_FRACTION, length)
-    return _fit_span(start, start + size, length)
+    return _fit_span(start, start + size * PERSON_HEAD_FRACTION, length)
 
 
-def crop_box(width: int, height: int, aspect: float, faces: list[Box],
-             people: list[Box] = ()) -> tuple[int, int, int, int]:
-    """Largest box with the given aspect that keeps the most faces/people.
+def crop_box(width: int, height: int, aspect: float, boxes: list[Box],
+             top_fallback: bool = False) -> tuple[int, int, int, int]:
+    """Largest box with the given aspect that keeps the most subjects.
 
-    Larger (closer) subjects weigh more when centering the box. People boxes
-    are kept whole when possible, otherwise their top part is used.
+    Larger (closer) subjects weigh more when centering the box. Boxes are kept
+    whole when possible; otherwise, with top_fallback (people), the top part
+    of the box is used on the y axis, else its center.
 
     Only one axis is ever cropped: either left/right or top/bottom.
     """
     if width / height > aspect:
         cw = max(1, min(width, round(height * aspect)))
-        spans = [(*_fit_span(f.x, f.x + f.w, cw), f.area) for f in faces]
-        spans += [(*_person_span(p.x, p.w, cw, top=False), p.area) for p in people]
+        spans = [(*_fit_span(b.x, b.x + b.w, cw), b.area) for b in boxes]
         x = _best_offset(width, cw, spans)
         return x, 0, x + cw, height
     ch = max(1, min(height, round(width / aspect)))
-    spans = [(*_fit_span(f.y, f.y + f.h, ch), f.area) for f in faces]
-    spans += [(*_person_span(p.y, p.h, ch, top=True), p.area) for p in people]
+    spans = [(*(_top_span(b.y, b.h, ch) if top_fallback else _fit_span(b.y, b.y + b.h, ch)), b.area)
+             for b in boxes]
     y = _best_offset(height, ch, spans)
     return 0, y, width, y + ch
