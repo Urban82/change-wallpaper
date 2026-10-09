@@ -5,7 +5,7 @@ Sets a random, face-aware wallpaper on every X11/Xorg monitor.
 The program reads all monitors (size, position, horizontal/vertical orientation) from Xorg/RandR,
 sorts the given images by orientation (from their actual size), picks a random one matching each
 monitor's orientation, crops it to the
-monitor's aspect ratio keeping the detected faces, and sets the combined image as the root background.
+monitor's aspect ratio keeping the detected faces (or people, when no face is visible), and sets the combined image as the root background.
 
 ## Installation
 
@@ -13,7 +13,8 @@ monitor's aspect ratio keeping the detected faces, and sets the combined image a
 poetry install
 ```
 
-The YuNet face detection model is downloaded once to `~/.cache/change-wallpaper/`.
+The YuNet face detection model and the NanoDet-Plus person detection model are downloaded once to
+`~/.cache/change-wallpaper/`.
 Everything else runs locally, on the CPU.
 
 ## Usage
@@ -29,10 +30,11 @@ poetry run change-wallpaper -i /path/to/photos extra.jpg -o /path/to/override.jp
 | `-i`, `--images PATH [PATH ...]` | Image files or directories (scanned recursively). Can be repeated. Images are sorted automatically: wider than tall → horizontal monitors, taller than wide → vertical monitors, square → either. |
 | `-o`, `--override IMAGE` | If this file exists, use it on every monitor instead of a random pick (cropping still applies). If it doesn't exist, images are picked randomly as usual. |
 | `-s`, `--save FILE` | Also save the combined wallpaper to `FILE`. |
-| `-d`, `--save-debug FILE` | Save a debug image: the uncropped source images in the monitor layout, with the crop area (green), detected faces (red) and ignored background faces (yellow). |
-| `-b`, `--background-percent PERCENT` | Ignore faces whose area is below `PERCENT`% of the biggest face, from 0 to 100. Default `25`; `0` disables the filter. |
+| `-d`, `--save-debug FILE` | Save a debug image: the uncropped source images in the monitor layout, with the crop area (green), detected faces (red), ignored background faces (yellow), detected people (blue) and ignored background people (magenta). |
+| `-b`, `--background-percent PERCENT` | Ignore faces (or people) whose area is below `PERCENT`% of the biggest one, from 0 to 100. Default `25`; `0` disables the filter. |
+| `-P`, `--no-people` | Don't look for people when no face is found. |
 | `-n`, `--dry-run` | Do everything except setting the X root background. |
-| `-v`, `--verbose` | Show DEBUG messages (faces, crop boxes, timings). |
+| `-v`, `--verbose` | Show DEBUG messages (faces, people, crop boxes, timings). |
 | `-q`, `--silent` | Show only warnings and errors. |
 | `-l`, `--log-file FILE` | Also log to `FILE`, rotated at 10 MB, keeping 5 files. |
 | `-h`, `--help` | Show the help message. |
@@ -47,8 +49,12 @@ poetry run change-wallpaper -i /path/to/photos extra.jpg -o /path/to/override.jp
 - Each image is cropped to the monitor's aspect ratio along a single axis only (left/right or
   top/bottom), keeping the largest possible area.
 - The crop keeps as many whole faces as possible and is centered on them, with bigger (closer)
-  faces weighing more. Without faces, the crop is centered.
-- Small background faces (see `-b`) are ignored.
+  faces weighing more.
+- When no face is found (e.g. people seen from behind), people are detected instead. The crop
+  keeps whole people when they fit; otherwise it is centered on the top 25% of the person (head
+  and shoulders) rather than the middle of the body.
+- Without faces or people, the crop is centered.
+- Small background faces and people (see `-b`) are ignored.
 - Square images can be used for either orientation when their faces are clearly arranged
   horizontally or vertically.
 

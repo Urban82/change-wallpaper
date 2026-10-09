@@ -9,12 +9,14 @@ from PIL import Image, ImageOps
 from Xlib import display
 
 from change_wallpaper.crop import (
-    BACKGROUND_FACE_RATIO, crop_box, face_orientation, foreground_faces, is_square,
+    BACKGROUND_FACE_RATIO, Subjects, crop_box, foreground, is_square, layout_orientation,
 )
 from change_wallpaper.debug import annotate
-from change_wallpaper.faces import Face, FaceDetector
+from change_wallpaper.detection import Box
+from change_wallpaper.faces import FaceDetector
 from change_wallpaper.log import get_logger, setup_logging
 from change_wallpaper.monitors import Monitor, get_monitors
+from change_wallpaper.people import PersonDetector
 from change_wallpaper.xroot import set_root_background
 
 Image.MAX_IMAGE_PIXELS = None
@@ -80,28 +82,49 @@ def collect(entries: list[str]) -> list[Candidate]:
 
 
 class Wallpaper:
-    def __init__(self, background_ratio: float = BACKGROUND_FACE_RATIO):
+    def __init__(self, background_ratio: float = BACKGROUND_FACE_RATIO, detect_people: bool = True):
         self.background_ratio = background_ratio
-        self._detector: FaceDetector | None = None
-        self._faces: dict[Path, list[Face]] = {}
+        self.detect_people = detect_people
+        self._face_detector: FaceDetector | None = None
+        self._person_detector: PersonDetector | None = None
+        self._subjects: dict[Path, Subjects] = {}
 
     def load(self, path: Path) -> Image.Image:
         with Image.open(path) as img:
             return ImageOps.exif_transpose(img).convert("RGB")
 
-    def faces(self, path: Path, img: Image.Image | None = None) -> list[Face]:
-        if path not in self._faces:
-            if self._detector is None:
-                self._detector = FaceDetector()
-            self._faces[path] = self._detector.detect(img if img is not None else self.load(path))
-            log.debug("%s: %d face(s)", path, len(self._faces[path]))
-        return self._faces[path]
+    def _split(self, boxes: list[Box], kind: str) -> tuple[list[Box], list[Box]]:
+        kept = foreground(boxes, self.background_ratio, kind)
+        return kept, [b for b in boxes if b not in kept]
+
+    def subjects(self, path: Path, img: Image.Image | None = None) -> Subjects:
+        """Faces, or people as a fallback when no face is found (cached per path)."""
+        if path in self._subjects:
+            return self._subjects[path]
+        if img is None:
+            img = self.load(path)
+        if self._face_detector is None:
+            self._face_detector = FaceDetector()
+        result = Subjects()
+        start = time.perf_counter()
+        faces = self._face_detector.detect(img)
+        log.debug("%s: %d face(s) found in %.2fs", path, len(faces), time.perf_counter() - start)
+        result.faces, result.background_faces = self._split(faces, "face")
+        if not faces and self.detect_people:
+            if self._person_detector is None:
+                self._person_detector = PersonDetector()
+            start = time.perf_counter()
+            people = self._person_detector.detect(img)
+            log.debug("%s: no faces, %d person(s) found in %.2fs", path, len(people), time.perf_counter() - start)
+            result.people, result.background_people = self._split(people, "person")
+        self._subjects[path] = result
+        return result
 
     def choose(self, monitor: Monitor, images: list[Candidate], used: set[Path]) -> Candidate | None:
         """Pick a random image matching the monitor orientation.
 
-        Square images are eligible for both orientations, unless their face
-        layout clearly prefers the other one (then only used as a fallback).
+        Square images are eligible for both orientations, unless their face (or
+        people) layout clearly prefers the other one (then only used as a fallback).
         """
         own = monitor.orientation
         options = [c for c in images if c.orientation in (own, "square")]
@@ -112,7 +135,7 @@ class Wallpaper:
         for cand in options:
             if not cand.square:
                 return cand
-            pref = face_orientation(foreground_faces(self.faces(cand.path), self.background_ratio))
+            pref = layout_orientation(self.subjects(cand.path).main)
             if pref in (own, None):
                 return cand
             if fallback is None:
@@ -122,12 +145,11 @@ class Wallpaper:
     def render(self, path: Path, monitor: Monitor, debug: bool = False) -> tuple[Image.Image, Image.Image | None]:
         """Cropped image for the monitor and, if requested, the annotated source image."""
         img = self.load(path)
-        faces = self.faces(path, img)
-        kept = foreground_faces(faces, self.background_ratio)
-        box = crop_box(img.width, img.height, monitor.aspect, kept)
+        found = self.subjects(path, img)
+        box = crop_box(img.width, img.height, monitor.aspect, found.faces, found.people)
         log.debug("%s: %s %s -> crop %s", monitor.name, path, img.size, box)
         cropped = img.crop(box).resize((monitor.width, monitor.height), Image.Resampling.LANCZOS)
-        return cropped, annotate(img, monitor, box, kept, [f for f in faces if f not in kept]) if debug else None
+        return cropped, annotate(img, monitor, box, found) if debug else None
 
 
 def percentage(value: str) -> float:
@@ -151,9 +173,11 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
                     metavar="PERCENT",
                     help="ignore faces whose area is below PERCENT%% of the biggest face, 0-100 "
                          f"(default {BACKGROUND_FACE_RATIO * 100:g}, 0 disables)")
+    ap.add_argument("-P", "--no-people", action="store_true",
+                    help="do not look for people (e.g. seen from behind) when no face is found")
     ap.add_argument("-d", "--save-debug", metavar="FILE",
-                    help="save the uncropped source images with crop area (green), faces (red) "
-                         "and ignored background faces (yellow) to FILE")
+                    help="save the uncropped source images with crop area (green), faces (red), "
+                         "background faces (yellow), people (blue) and background people (magenta) to FILE")
     ap.add_argument("-n", "--dry-run", action="store_true", help="do not set the X root background")
     verbosity = ap.add_mutually_exclusive_group()
     verbosity.add_argument("-v", "--verbose", action="store_true", help="log DEBUG messages")
@@ -182,7 +206,7 @@ def run(args: argparse.Namespace) -> int:
     screen = dpy.screen()
     monitors = get_monitors(dpy)
 
-    wp = Wallpaper(args.background_percent / 100)
+    wp = Wallpaper(args.background_percent / 100, not args.no_people)
     override = Path(args.override).expanduser() if args.override else None
     if override and override.is_file() and probe(override):
         log.info("Using override image %s", override)

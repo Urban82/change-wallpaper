@@ -1,4 +1,6 @@
-from change_wallpaper.faces import Face
+from dataclasses import dataclass, field
+
+from change_wallpaper.detection import Box
 from change_wallpaper.log import get_logger
 
 log = get_logger(__name__)
@@ -7,34 +9,51 @@ log = get_logger(__name__)
 SQUARE_TOLERANCE = 0.05
 # Faces with an area below this fraction of the biggest face are background
 BACKGROUND_FACE_RATIO = 0.25
+# Top part of a person box used when the whole box does not fit the crop
+PERSON_HEAD_FRACTION = 0.25
+
+
+@dataclass
+class Subjects:
+    """Detected subjects of an image, split into foreground (used) and background (ignored)."""
+
+    faces: list[Box] = field(default_factory=list)
+    background_faces: list[Box] = field(default_factory=list)
+    people: list[Box] = field(default_factory=list)
+    background_people: list[Box] = field(default_factory=list)
+
+    @property
+    def main(self) -> list[Box]:
+        return self.faces or self.people
 
 
 def is_square(width: int, height: int) -> bool:
     return abs(width / height - 1.0) <= SQUARE_TOLERANCE
 
 
-def foreground_faces(faces: list[Face], ratio: float = BACKGROUND_FACE_RATIO) -> list[Face]:
-    """Drop background faces: those whose area is below ratio * the biggest face area."""
-    if len(faces) < 2 or ratio <= 0:
-        return faces
-    biggest = max(f.w * f.h for f in faces)
-    kept = [f for f in faces if f.w * f.h >= biggest * ratio]
-    if len(kept) < len(faces):
-        log.debug("Ignoring %d background face(s) smaller than %.0f%% of the biggest",
-                  len(faces) - len(kept), ratio * 100)
+def foreground(boxes: list[Box], ratio: float = BACKGROUND_FACE_RATIO,
+               kind: str = "object") -> list[Box]:
+    """Drop background boxes: those whose area is below ratio * the biggest area."""
+    if len(boxes) < 2 or ratio <= 0:
+        return boxes
+    biggest = max(b.area for b in boxes)
+    kept = [b for b in boxes if b.area >= biggest * ratio]
+    if len(kept) < len(boxes):
+        log.debug("Ignoring %d background %s(s) smaller than %.0f%% of the biggest",
+                  len(boxes) - len(kept), kind, ratio * 100)
     return kept
 
 
-def face_orientation(faces: list[Face]) -> str | None:
-    """Preferred orientation given face layout: 'horizontal', 'vertical' or None."""
-    if len(faces) < 2:
+def layout_orientation(boxes: list[Box]) -> str | None:
+    """Preferred orientation given the boxes layout: 'horizontal', 'vertical' or None."""
+    if len(boxes) < 2:
         return None
-    x0 = min(f.x for f in faces)
-    x1 = max(f.x + f.w for f in faces)
-    y0 = min(f.y for f in faces)
-    y1 = max(f.y + f.h for f in faces)
+    x0 = min(b.x for b in boxes)
+    x1 = max(b.x + b.w for b in boxes)
+    y0 = min(b.y for b in boxes)
+    y1 = max(b.y + b.h for b in boxes)
     span_w, span_h = x1 - x0, y1 - y0
-    log.debug("Face span %.0fx%.0f", span_w, span_h)
+    log.debug("Subjects span %.0fx%.0f", span_w, span_h)
     if span_w > span_h * 1.2:
         return "horizontal"
     if span_h > span_w * 1.2:
@@ -76,17 +95,40 @@ def _best_offset(size: int, length: int, spans: list[tuple[float, float, float]]
     return round(best_p)
 
 
-def crop_box(width: int, height: int, aspect: float, faces: list[Face]) -> tuple[int, int, int, int]:
-    """Largest box with the given aspect that keeps the most faces.
+def _fit_span(a: float, b: float, length: int) -> tuple[float, float]:
+    """Span itself if it fits in the window, otherwise its center point."""
+    if b - a <= length:
+        return a, b
+    mid = (a + b) / 2
+    return mid, mid
 
-    Larger (closer) faces weigh more when centering the box.
+
+def _person_span(start: float, size: float, length: int, top: bool) -> tuple[float, float]:
+    """Whole person box if it fits; otherwise the top part (head and shoulders) on the y axis."""
+    if size <= length:
+        return start, start + size
+    if top:
+        return _fit_span(start, start + size * PERSON_HEAD_FRACTION, length)
+    return _fit_span(start, start + size, length)
+
+
+def crop_box(width: int, height: int, aspect: float, faces: list[Box],
+             people: list[Box] = ()) -> tuple[int, int, int, int]:
+    """Largest box with the given aspect that keeps the most faces/people.
+
+    Larger (closer) subjects weigh more when centering the box. People boxes
+    are kept whole when possible, otherwise their top part is used.
 
     Only one axis is ever cropped: either left/right or top/bottom.
     """
     if width / height > aspect:
         cw = max(1, min(width, round(height * aspect)))
-        x = _best_offset(width, cw, [(f.x, f.x + f.w, f.w * f.h) for f in faces])
+        spans = [(*_fit_span(f.x, f.x + f.w, cw), f.area) for f in faces]
+        spans += [(*_person_span(p.x, p.w, cw, top=False), p.area) for p in people]
+        x = _best_offset(width, cw, spans)
         return x, 0, x + cw, height
     ch = max(1, min(height, round(width / aspect)))
-    y = _best_offset(height, ch, [(f.y, f.y + f.h, f.w * f.h) for f in faces])
+    spans = [(*_fit_span(f.y, f.y + f.h, ch), f.area) for f in faces]
+    spans += [(*_person_span(p.y, p.h, ch, top=True), p.area) for p in people]
+    y = _best_offset(height, ch, spans)
     return 0, y, width, y + ch
