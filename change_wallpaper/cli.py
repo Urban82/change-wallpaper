@@ -9,6 +9,7 @@ from PIL import Image, ImageOps
 from Xlib import display
 
 from change_wallpaper.crop import crop_box, face_orientation, is_square
+from change_wallpaper.debug import annotate
 from change_wallpaper.faces import Face, FaceDetector
 from change_wallpaper.log import get_logger, setup_logging
 from change_wallpaper.monitors import Monitor, get_monitors
@@ -110,12 +111,14 @@ class Wallpaper:
                 fallback = cand
         return fallback
 
-    def render(self, path: Path, monitor: Monitor) -> Image.Image:
+    def render(self, path: Path, monitor: Monitor, debug: bool = False) -> tuple[Image.Image, Image.Image | None]:
+        """Cropped image for the monitor and, if requested, the annotated source image."""
         img = self.load(path)
         faces = self.faces(path, img)
         box = crop_box(img.width, img.height, monitor.aspect, faces)
         log.debug("%s: %s %s -> crop %s", monitor.name, path, img.size, box)
-        return img.crop(box).resize((monitor.width, monitor.height), Image.Resampling.LANCZOS)
+        cropped = img.crop(box).resize((monitor.width, monitor.height), Image.Resampling.LANCZOS)
+        return cropped, annotate(img, monitor, box, faces) if debug else None
 
 
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -127,6 +130,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     ap.add_argument("-o", "--override", metavar="IMAGE",
                     help="if this file exists, use it on all monitors instead of a random pick")
     ap.add_argument("-s", "--save", metavar="FILE", help="also save the combined image to FILE")
+    ap.add_argument("-d", "--save-debug", metavar="FILE",
+                    help="save the uncropped source images with crop area (green) and faces (red) to FILE")
     ap.add_argument("-n", "--dry-run", action="store_true", help="do not set the X root background")
     verbosity = ap.add_mutually_exclusive_group()
     verbosity.add_argument("-v", "--verbose", action="store_true", help="log DEBUG messages")
@@ -186,13 +191,20 @@ def run(args: argparse.Namespace) -> int:
 
     start = time.perf_counter()
     canvas = Image.new("RGB", (screen.width_in_pixels, screen.height_in_pixels))
+    debug_canvas = Image.new("RGB", canvas.size) if args.save_debug else None
     for m, path in selection.items():
-        canvas.paste(wp.render(path, m), (m.x, m.y))
+        cropped, annotated = wp.render(path, m, debug_canvas is not None)
+        canvas.paste(cropped, (m.x, m.y))
+        if debug_canvas is not None:
+            debug_canvas.paste(annotated, (m.x, m.y))
     log.debug("Rendering took %.2fs", time.perf_counter() - start)
 
     if args.save:
         canvas.save(args.save)
         log.info("Combined image saved to %s", args.save)
+    if debug_canvas is not None:
+        debug_canvas.save(args.save_debug)
+        log.info("Debug image saved to %s", args.save_debug)
     if not args.dry_run:
         start = time.perf_counter()
         set_root_background(dpy, canvas)
