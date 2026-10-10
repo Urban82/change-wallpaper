@@ -30,6 +30,7 @@ face-aware wallpaper on every monitor of an X11/Xorg desktop.
 | `debug.py` | Annotated debug image (source image + crop/face rectangles) |
 | `xroot.py` | Setting the X root background pixmap |
 | `log.py` | Logging setup and `get_logger()` |
+| `history.py` | Recent selections (last 5 groups of image paths) in the cache directory |
 
 Keep `crop.py` free of I/O so it stays easy to test with synthetic `Box` objects.
 Detectors return `Box` objects. An image has **one subject kind** (`Subjects.kind`: `face`,
@@ -45,7 +46,7 @@ Detectors return `Box` objects. An image has **one subject kind** (`Subjects.kin
 | `-d/--save-debug FILE` | Save the debug image (uncropped sources with rectangles) |
 | `-b/--background-percent PERCENT` | Background subject threshold as a percentage, 0–100 (default `25`, `0` disables); converted to a 0–1 ratio internally |
 | `-F/--fallback KINDS` | Comma list of `people`, `animals`, `vehicles` (order matters) or `none`; default `people,animals,vehicles` |
-| `-n/--dry-run` | Do not set the X root background |
+| `-n/--dry-run` | Do not set the X root background (and do not update the history) |
 | `-v/--verbose` / `-q/--silent` | DEBUG / WARNING log level (mutually exclusive; default INFO) |
 | `-l/--log-file FILE` | Also log to a rotating file |
 
@@ -69,6 +70,11 @@ Detectors return `Box` objects. An image has **one subject kind** (`Subjects.kin
   `square` (`Candidate.orientation`). This also fixes misfiled images.
 - One random image per monitor among the images matching its orientation, plus square images.
 - Avoid repeating the same image on multiple monitors when possible.
+- **History** (`history.py`): after the background is set, the selection group (monitor name →
+  resolved image path, paths only) is saved to `~/.cache/change-wallpaper/history.json`, keeping the
+  last 5 groups (`HISTORY_SIZE`, oldest dropped). Images in the history are avoided on **all**
+  monitors as a soft preference (after "not used on another monitor in this run"); they are still
+  used when nothing else matches. Not saved with `--dry-run` or when the override image is used.
 - **Square images** (aspect within ±5% of 1:1, `SQUARE_TOLERANCE`): face layout decides the
   preferred orientation (`layout_orientation`: union span of the image's foreground subjects;
   one side >1.2× the other). A square image

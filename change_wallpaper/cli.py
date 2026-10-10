@@ -17,6 +17,7 @@ from change_wallpaper.crop import (
 from change_wallpaper.debug import annotate
 from change_wallpaper.detection import Box
 from change_wallpaper.faces import FaceDetector
+from change_wallpaper.history import load_history, recent_paths, save_history
 from change_wallpaper.log import get_logger, setup_logging
 from change_wallpaper.monitors import Monitor, get_monitors
 from change_wallpaper.objects import ObjectDetector
@@ -134,7 +135,8 @@ class Wallpaper:
         self._subjects[path] = result
         return result
 
-    def choose(self, monitor: Monitor, images: list[Candidate], used: set[Path]) -> Candidate | None:
+    def choose(self, monitor: Monitor, images: list[Candidate], used: set[Path],
+               recent: set[Path] = frozenset()) -> Candidate | None:
         """Pick a random image matching the monitor orientation.
 
         Square images are eligible for both orientations, unless the layout of
@@ -143,8 +145,8 @@ class Wallpaper:
         own = monitor.orientation
         options = [c for c in images if c.orientation in (own, "square")]
         random.shuffle(options)
-        # prefer images not yet shown on another monitor
-        options.sort(key=lambda c: c.path in used)
+        # prefer images not yet shown on another monitor, then not shown in recent runs
+        options.sort(key=lambda c: (c.path in used, c.path.resolve() in recent))
         fallback = None
         for cand in options:
             if not cand.square:
@@ -237,10 +239,14 @@ def run(args: argparse.Namespace) -> int:
 
     wp = Wallpaper(args.background_percent / 100, args.fallback)
     override = Path(args.override).expanduser() if args.override else None
+    history = None
     if override and override.is_file() and probe(override):
         log.info("Using override image %s", override)
         selection = {m: override for m in monitors}
     else:
+        history = load_history()
+        recent = recent_paths(history)
+        log.debug("%d recently used image(s) in history", len(recent))
         if override:
             log.debug("Override %s not usable, selecting randomly", override)
         start = time.perf_counter()
@@ -252,7 +258,7 @@ def run(args: argparse.Namespace) -> int:
         selection = {}
         used: set[Path] = set()
         for m in monitors:
-            cand = wp.choose(m, images, used)
+            cand = wp.choose(m, images, used, recent)
             if cand is None:
                 log.warning("No image available for %s monitor %s", m.orientation, m.name)
                 continue
@@ -285,5 +291,7 @@ def run(args: argparse.Namespace) -> int:
         start = time.perf_counter()
         set_root_background(dpy, canvas)
         log.debug("Setting background took %.2fs", time.perf_counter() - start)
+        if history is not None:
+            save_history(history, {m.name: str(p.resolve()) for m, p in selection.items()})
     dpy.close()
     return 0

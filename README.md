@@ -33,7 +33,7 @@ poetry run change-wallpaper -i /path/to/photos extra.jpg -o /path/to/override.jp
 | `-d`, `--save-debug FILE` | Save a debug image: the uncropped source images in the monitor layout, with the crop area (green) and the detected faces (red), people (blue), animals (orange) or vehicles (magenta). Ignored background ones are drawn dashed, in a darker shade of the same color. |
 | `-b`, `--background-percent PERCENT` | Ignore faces (or people, animals, vehicles) whose area is below `PERCENT`% of the biggest one, from 0 to 100. Default `25`; `0` disables the filter. |
 | `-F`, `--fallback KINDS` | What to look for, in order, when no face is found: a comma-separated list of `people`, `animals`, `vehicles`, or `none` to disable. Default `people,animals,vehicles`. |
-| `-n`, `--dry-run` | Do everything except setting the X root background. |
+| `-n`, `--dry-run` | Do everything except setting the X root background (the selection history is not updated). |
 | `-v`, `--verbose` | Show DEBUG messages (detected subjects, crop boxes, timings). |
 | `-q`, `--silent` | Show only warnings and errors. |
 | `-l`, `--log-file FILE` | Also log to `FILE`, rotated at 10 MB, keeping 5 files. |
@@ -42,6 +42,11 @@ poetry run change-wallpaper -i /path/to/photos extra.jpg -o /path/to/override.jp
 `-v` and `-q` cannot be used together. Without either, INFO messages are shown.
 
 ## How images are chosen and cropped
+
+The paths of the images shown in the last 5 runs are kept in
+`~/.cache/change-wallpaper/history.json`. Those images are avoided on every monitor while other
+matching images are available. The history is not updated in dry-run mode or when the override
+image is used.
 
 - Invalid images are skipped with a warning.
 - Orientation comes from the image size, taking the EXIF rotation into account.
