@@ -42,6 +42,7 @@ Detectors return `Box` objects. An image has **one subject kind** (`Subjects.kin
 |---|---|
 | `-i/--images PATH...` | Files or directories (recursive), repeatable; images are sorted by orientation automatically |
 | `-o/--override IMAGE` | If the file exists, use it on **all** monitors (full crop logic still applies); otherwise fall back to random selection |
+| `-L/--last [N]` | Reuse the N-th most recent history group (default 1, 1–5); `-i` ignored (no scan), other options honored; missing/invalid image → ERROR, exit 1; mutually exclusive with `-o`; history not updated |
 | `-s/--save FILE` | Save the combined wallpaper |
 | `-d/--save-debug FILE` | Save the debug image (uncropped sources with rectangles) |
 | `-b/--background-percent PERCENT` | Background subject threshold as a percentage, 0–100 (default `25`, `0` disables); converted to a 0–1 ratio internally |
@@ -74,7 +75,7 @@ Detectors return `Box` objects. An image has **one subject kind** (`Subjects.kin
   resolved image path, paths only) is saved to `~/.cache/change-wallpaper/history.json`, keeping the
   last 5 groups (`HISTORY_SIZE`, oldest dropped). Images in the history are avoided on **all**
   monitors as a soft preference (after "not used on another monitor in this run"); they are still
-  used when nothing else matches. Not saved with `--dry-run` or when the override image is used.
+  used when nothing else matches. Not saved with `--dry-run`, `--last` or when the override image is used.
 - **Square images** (aspect within ±5% of 1:1, `SQUARE_TOLERANCE`): face layout decides the
   preferred orientation (`layout_orientation`: union span of the image's foreground subjects;
   one side >1.2× the other). A square image

@@ -29,6 +29,7 @@ poetry run change-wallpaper -i /path/to/photos extra.jpg -o /path/to/override.jp
 |---|---|
 | `-i`, `--images PATH [PATH ...]` | Image files or directories (scanned recursively). Can be repeated. Images are sorted automatically: wider than tall → horizontal monitors, taller than wide → vertical monitors, square → either. |
 | `-o`, `--override IMAGE` | If this file exists, use it on every monitor instead of a random pick (cropping still applies). If it doesn't exist, images are picked randomly as usual. |
+| `-L`, `--last [N]` | Reuse the images of the N-th most recent run from the history (default `1` = latest, up to `5`). `--images` is ignored; every other option applies, e.g. `-L 2 -n -d debug.png` to inspect a previous wallpaper. Fails if an image is no longer available. Cannot be combined with `-o`; does not update the history. |
 | `-s`, `--save FILE` | Also save the combined wallpaper to `FILE`. |
 | `-d`, `--save-debug FILE` | Save a debug image: the uncropped source images in the monitor layout, with the crop area (green) and the detected faces (red), people (blue), animals (orange) or vehicles (magenta). Ignored background ones are drawn dashed, in a darker shade of the same color. |
 | `-b`, `--background-percent PERCENT` | Ignore faces (or people, animals, vehicles) whose area is below `PERCENT`% of the biggest one, from 0 to 100. Default `25`; `0` disables the filter. |
@@ -45,7 +46,7 @@ poetry run change-wallpaper -i /path/to/photos extra.jpg -o /path/to/override.jp
 
 The paths of the images shown in the last 5 runs are kept in
 `~/.cache/change-wallpaper/history.json`. Those images are avoided on every monitor while other
-matching images are available. The history is not updated in dry-run mode or when the override
+matching images are available. The history is not updated in dry-run mode, with `--last`, or when the override
 image is used.
 
 - Invalid images are skipped with a warning.

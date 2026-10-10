@@ -17,7 +17,7 @@ from change_wallpaper.crop import (
 from change_wallpaper.debug import annotate
 from change_wallpaper.detection import Box
 from change_wallpaper.faces import FaceDetector
-from change_wallpaper.history import load_history, recent_paths, save_history
+from change_wallpaper.history import HISTORY_SIZE, load_history, recent_paths, save_history
 from change_wallpaper.log import get_logger, setup_logging
 from change_wallpaper.monitors import Monitor, get_monitors
 from change_wallpaper.objects import ObjectDetector
@@ -168,6 +168,30 @@ class Wallpaper:
         return cropped, annotate(img, monitor, box, found) if debug else None
 
 
+def previous_selection(monitors: list[Monitor], last: int) -> dict[Monitor, Path] | None:
+    """Selection of the last-th most recent run from the history, None on error."""
+    history = load_history()
+    if last > len(history):
+        log.error("No run #%d in history (%d run(s) saved)", last, len(history))
+        return None
+    group = history[-last]
+    log.info("Reusing selection of run #%d from history", last)
+    selection = {}
+    missing = False
+    for m in monitors:
+        if m.name not in group:
+            log.warning("No image in history for monitor %s", m.name)
+            continue
+        path = Path(group[m.name])
+        if not path.is_file() or probe(path) is None:
+            log.error("Image %s from history is not available anymore", path)
+            missing = True
+            continue
+        selection[m] = path
+        log.info("Monitor %s: %s", m.name, path)
+    return None if missing else selection
+
+
 def fallbacks(value: str) -> tuple[str, ...]:
     if value.strip().lower() == "none":
         return ()
@@ -191,12 +215,26 @@ def percentage(value: str) -> float:
     return number
 
 
+def history_index(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid integer: {value!r}") from None
+    if not 1 <= number <= HISTORY_SIZE:
+        raise argparse.ArgumentTypeError(f"must be between 1 and {HISTORY_SIZE}, got {value}")
+    return number
+
+
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Set a face-aware random wallpaper on every X11 monitor.")
     ap.add_argument("-i", "--images", nargs="+", action="extend", default=[], metavar="PATH",
                     help="image files or directories (recursive); sorted by orientation automatically")
-    ap.add_argument("-o", "--override", metavar="IMAGE",
-                    help="if this file exists, use it on all monitors instead of a random pick")
+    source = ap.add_mutually_exclusive_group()
+    source.add_argument("-o", "--override", metavar="IMAGE",
+                        help="if this file exists, use it on all monitors instead of a random pick")
+    source.add_argument("-L", "--last", nargs="?", const=1, type=history_index, metavar="N",
+                        help=f"reuse the images of the N-th most recent run (default 1, max {HISTORY_SIZE}); "
+                             "--images is ignored")
     ap.add_argument("-s", "--save", metavar="FILE", help="also save the combined image to FILE")
     ap.add_argument("-b", "--background-percent", type=percentage, default=BACKGROUND_FACE_RATIO * 100,
                     metavar="PERCENT",
@@ -240,7 +278,11 @@ def run(args: argparse.Namespace) -> int:
     wp = Wallpaper(args.background_percent / 100, args.fallback)
     override = Path(args.override).expanduser() if args.override else None
     history = None
-    if override and override.is_file() and probe(override):
+    if args.last:
+        selection = previous_selection(monitors, args.last)
+        if selection is None:
+            return 1
+    elif override and override.is_file() and probe(override):
         log.info("Using override image %s", override)
         selection = {m: override for m in monitors}
     else:
